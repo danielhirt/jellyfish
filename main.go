@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
-	"io"
+	"jellyfish/internal/handler"
+	"jellyfish/internal/store"
 	"net"
-	"os"
 )
 
 func main() {
@@ -16,25 +16,18 @@ func main() {
 		return
 	}
 
-	conn, err := l.Accept()
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
+	// Initialize the shared store
+	kv := store.New()
 
-	defer conn.Close()
+	// Initialize the handler with the store
+	h := handler.New(kv)
 
 	for {
-		buf := make([]byte, 1024)
-		_, err = conn.Read(buf)
+		conn, err := l.Accept()
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			fmt.Println("Error reading from the client: ", err.Error())
-			os.Exit(1)
+			fmt.Println(err)
+			continue
 		}
-
-		conn.Write([]byte("+OK\r\n"))
+		go h.Handle(conn)
 	}
 }

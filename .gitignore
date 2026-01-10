@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+jellyfish
 
 # Test binary, built with `go test -c`
 *.test
@@ -16,3 +17,12 @@
 
 # Go workspace file
 go.work
+
+# Documentation
+AGENTS.md
+ROADMAP.md
+
+# IDEs
+.idea/
+.vscode/
+*.swp
