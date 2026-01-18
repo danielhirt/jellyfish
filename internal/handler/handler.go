@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"io"
+	"jellyfish/internal/aof"
 	"jellyfish/internal/resp"
 	"jellyfish/internal/store"
 	"net"
@@ -12,10 +13,11 @@ import (
 
 type Handler struct {
 	store *store.Store
+	aof   *aof.Aof
 }
 
-func New(s *store.Store) *Handler {
-	return &Handler{store: s}
+func New(s *store.Store, aof *aof.Aof) *Handler {
+	return &Handler{store: s, aof: aof}
 }
 
 func (h *Handler) Handle(conn net.Conn) {
@@ -38,90 +40,139 @@ func (h *Handler) Handle(conn net.Conn) {
 			continue
 		}
 
-		command := strings.ToUpper(value.Array[0].Bulk)
-		args := value.Array[1:]
-
-		h.execute(command, args, w)
+		// Pass the full value to execute for AOF logging
+		h.Execute(value, w)
 	}
 }
 
-func (h *Handler) execute(cmd string, args []resp.Value, w *resp.Writer) {
-	switch cmd {
+// Execute processes a RESP command.
+// If w is nil, no response is written (useful for AOF replay).
+func (h *Handler) Execute(value resp.Value, w *resp.Writer) {
+	command := strings.ToUpper(value.Array[0].Bulk)
+	args := value.Array[1:]
+
+	switch command {
 	case "PING":
-		w.Write(resp.Value{Type: "string", Str: "PONG"})
+		if w != nil {
+			w.Write(resp.Value{Type: "string", Str: "PONG"})
+		}
 
 	case "ECHO":
 		if len(args) > 0 {
-			w.Write(resp.Value{Type: "bulk", Bulk: args[0].Bulk})
+			if w != nil {
+				w.Write(resp.Value{Type: "bulk", Bulk: args[0].Bulk})
+			}
 		} else {
-			w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'echo' command"})
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'echo' command"})
+			}
 		}
 
 	case "SET":
 		if len(args) != 2 {
-			w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'set' command"})
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'set' command"})
+			}
 			return
 		}
+
+		if h.aof != nil {
+			h.aof.Write(value)
+		}
+
 		key := args[0].Bulk
 		val := args[1].Bulk
 		h.store.Set(key, val)
-		w.Write(resp.Value{Type: "string", Str: "OK"})
+		if w != nil {
+			w.Write(resp.Value{Type: "string", Str: "OK"})
+		}
 
 	case "GET":
 		if len(args) != 1 {
-			w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'get' command"})
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'get' command"})
+			}
 			return
 		}
 		key := args[0].Bulk
 		val, ok := h.store.Get(key)
-		if !ok {
-			w.Write(resp.Value{Type: "null"})
-		} else {
-			w.Write(resp.Value{Type: "bulk", Bulk: val})
+		if w != nil {
+			if !ok {
+				w.Write(resp.Value{Type: "null"})
+			} else {
+				w.Write(resp.Value{Type: "bulk", Bulk: val})
+			}
 		}
 
 	case "DEL":
 		if len(args) != 1 {
-			w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'del' command"})
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'del' command"})
+			}
 			return
 		}
+
+		if h.aof != nil {
+			h.aof.Write(value)
+		}
+
 		key := args[0].Bulk
 		deleted := h.store.Del(key)
-		if deleted {
-			w.Write(resp.Value{Type: "integer", Num: 1})
-		} else {
-			w.Write(resp.Value{Type: "integer", Num: 0})
+		if w != nil {
+			if deleted {
+				w.Write(resp.Value{Type: "integer", Num: 1})
+			} else {
+				w.Write(resp.Value{Type: "integer", Num: 0})
+			}
 		}
 
 	case "EXPIRE":
 		if len(args) != 2 {
-			w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'expire' command"})
-			return
-		}
-		key := args[0].Bulk
-		seconds, err := strconv.Atoi(args[1].Bulk)
-		if err != nil {
-			w.Write(resp.Value{Type: "error", Str: "ERR value is not an integer or out of range"})
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'expire' command"})
+			}
 			return
 		}
 
+		key := args[0].Bulk
+		// Validate integer before logging
+		seconds, err := strconv.Atoi(args[1].Bulk)
+		if err != nil {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR value is not an integer or out of range"})
+			}
+			return
+		}
+
+		if h.aof != nil {
+			h.aof.Write(value)
+		}
+
 		ok := h.store.Expire(key, seconds)
-		if ok {
-			w.Write(resp.Value{Type: "integer", Num: 1})
-		} else {
-			w.Write(resp.Value{Type: "integer", Num: 0})
+		if w != nil {
+			if ok {
+				w.Write(resp.Value{Type: "integer", Num: 1})
+			} else {
+				w.Write(resp.Value{Type: "integer", Num: 0})
+			}
 		}
 
 	case "TTL":
 		if len(args) != 1 {
-			w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'ttl' command"})
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'ttl' command"})
+			}
 			return
 		}
 		key := args[0].Bulk
 		ttl := h.store.TTL(key)
-		w.Write(resp.Value{Type: "integer", Num: ttl})
+		if w != nil {
+			w.Write(resp.Value{Type: "integer", Num: ttl})
+		}
 
 	default:
-		w.Write(resp.Value{Type: "error", Str: fmt.Sprintf("ERR unknown command '%s'", cmd)})
+		if w != nil {
+			w.Write(resp.Value{Type: "error", Str: fmt.Sprintf("ERR unknown command '%s'", command)})
+		}
 	}
 }
