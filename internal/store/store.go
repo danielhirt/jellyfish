@@ -5,8 +5,15 @@ import (
 	"time"
 )
 
+const (
+	TypeString = 0
+	TypeVector = 1
+)
+
 type Item struct {
-	Value     string
+	Type      uint8
+	StrVal    string
+	VecVal    []float32
 	ExpiresAt time.Time // Zero value means no expiration
 }
 
@@ -33,7 +40,18 @@ func (s *Store) Unlock() {
 
 // SetWithoutLock writes to the store without locking. Caller must hold the lock.
 func (s *Store) SetWithoutLock(key, value string) {
-	s.data[key] = Item{Value: value}
+	s.data[key] = Item{
+		Type:   TypeString,
+		StrVal: value,
+	}
+}
+
+// SetVectorWithoutLock writes a vector to the store.
+func (s *Store) SetVectorWithoutLock(key string, vec []float32) {
+	s.data[key] = Item{
+		Type:   TypeVector,
+		VecVal: vec,
+	}
 }
 
 // GetWithoutLock reads from the store without locking. Caller must hold the lock.
@@ -48,7 +66,35 @@ func (s *Store) GetWithoutLock(key string) (string, bool) {
 		return "", false
 	}
 
-	return item.Value, true
+	if item.Type != TypeString {
+		// Redis protocol usually returns error for wrong type, but here we return nil/false or handle it upper layer.
+		// For simplicity, we return empty string and true, but let's stick to "not found" behavior for wrong type
+		// or let the handler check type?
+		// Better: Return the raw item or check type.
+		// To match existing API signature `(string, bool)`, we return false if it's not a string.
+		return "", false
+	}
+
+	return item.StrVal, true
+}
+
+// GetVectorWithoutLock reads a vector.
+func (s *Store) GetVectorWithoutLock(key string) ([]float32, bool) {
+	item, ok := s.data[key]
+	if !ok {
+		return nil, false
+	}
+
+	if !item.ExpiresAt.IsZero() && time.Now().After(item.ExpiresAt) {
+		delete(s.data, key)
+		return nil, false
+	}
+
+	if item.Type != TypeVector {
+		return nil, false
+	}
+
+	return item.VecVal, true
 }
 
 // DelWithoutLock deletes without locking. Caller must hold the lock.
@@ -96,16 +142,30 @@ func (s *Store) TTLWithoutLock(key string) int {
 	return int(time.Until(item.ExpiresAt).Seconds())
 }
 
+// --- Public Thread-Safe API ---
+
 func (s *Store) Set(key, value string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.SetWithoutLock(key, value)
 }
 
+func (s *Store) SetVector(key string, vec []float32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.SetVectorWithoutLock(key, vec)
+}
+
 func (s *Store) Get(key string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.GetWithoutLock(key)
+}
+
+func (s *Store) GetVector(key string) ([]float32, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.GetVectorWithoutLock(key)
 }
 
 func (s *Store) Del(key string) bool {
@@ -124,4 +184,25 @@ func (s *Store) TTL(key string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.TTLWithoutLock(key)
+}
+
+// GetAllVectors returns a map of all valid vectors (for search).
+func (s *Store) GetAllVectors() map[string][]float32 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Create a copy to avoid race conditions during iteration by caller if they were to use the map directly
+	// Actually, we should return a snapshot.
+	vectors := make(map[string][]float32)
+	now := time.Now()
+
+	for k, v := range s.data {
+		if !v.ExpiresAt.IsZero() && now.After(v.ExpiresAt) {
+			continue // Don't return expired items (cleanup happens on Get/Del usually)
+		}
+		if v.Type == TypeVector {
+			vectors[k] = v.VecVal
+		}
+	}
+	return vectors
 }

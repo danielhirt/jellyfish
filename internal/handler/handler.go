@@ -6,7 +6,9 @@ import (
 	"jellyfish/internal/aof"
 	"jellyfish/internal/resp"
 	"jellyfish/internal/store"
+	"math"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -105,19 +107,7 @@ func (h *Handler) execTx(w *resp.Writer) {
 
 	responses := make([]resp.Value, len(h.txQueue))
 
-	// Temporarily disable AOF writing in the loop to batch it or handle it cleanly?
-	// Redis logs the individual commands as they execute or the block.
-	// For simplicity, we execute them and they will be logged if logic permits.
-	// But Execute() currently does self-locking AND logging.
-	// We need 'ExecuteWithoutLock' logic.
-
 	for i, cmdValue := range h.txQueue {
-		// We need to capture the output.
-		// Since our Execute/ExecuteWithoutLock logic writes to a Writer,
-		// we need a temporary buffer writer or refactor Execute.
-		// Refactoring Execute to return (resp.Value, error) is cleaner than passing a Writer.
-		// But for now, let's use a specialized method for the Tx loop.
-
 		responses[i] = h.executeWithoutLock(cmdValue)
 	}
 
@@ -157,6 +147,28 @@ func (h *Handler) executeWithoutLock(value resp.Value) resp.Value {
 		h.store.SetWithoutLock(args[0].Bulk, args[1].Bulk)
 		return resp.Value{Type: "string", Str: "OK"}
 
+	case "TSET":
+		// TSET key v1 v2 v3 ...
+		if len(args) < 2 {
+			return resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'tset' command"}
+		}
+		key := args[0].Bulk
+		vec := make([]float32, 0, len(args)-1)
+		for _, arg := range args[1:] {
+			val, err := strconv.ParseFloat(arg.Bulk, 32)
+			if err != nil {
+				return resp.Value{Type: "error", Str: "ERR invalid float value"}
+			}
+			vec = append(vec, float32(val))
+		}
+
+		if h.aof != nil {
+			h.aof.Write(value)
+		}
+
+		h.store.SetVectorWithoutLock(key, vec)
+		return resp.Value{Type: "string", Str: "OK"}
+
 	case "GET":
 		if len(args) != 1 {
 			return resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'get' command"}
@@ -166,6 +178,22 @@ func (h *Handler) executeWithoutLock(value resp.Value) resp.Value {
 			return resp.Value{Type: "null"}
 		}
 		return resp.Value{Type: "bulk", Bulk: val}
+
+	case "TGET":
+		if len(args) != 1 {
+			return resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'tget' command"}
+		}
+		vec, ok := h.store.GetVectorWithoutLock(args[0].Bulk)
+		if !ok {
+			return resp.Value{Type: "null"}
+		}
+
+		// Convert []float32 to []resp.Value
+		vals := make([]resp.Value, len(vec))
+		for i, v := range vec {
+			vals[i] = resp.Value{Type: "bulk", Bulk: fmt.Sprintf("%g", v)}
+		}
+		return resp.Value{Type: "array", Array: vals}
 
 	case "DEL":
 		if len(args) != 1 {
@@ -251,6 +279,36 @@ func (h *Handler) Execute(value resp.Value, w *resp.Writer) {
 			w.Write(resp.Value{Type: "string", Str: "OK"})
 		}
 
+	case "TSET":
+		// TSET key v1 v2 v3 ...
+		if len(args) < 2 {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'tset' command"})
+			}
+			return
+		}
+		key := args[0].Bulk
+		vec := make([]float32, 0, len(args)-1)
+		for _, arg := range args[1:] {
+			val, err := strconv.ParseFloat(arg.Bulk, 32)
+			if err != nil {
+				if w != nil {
+					w.Write(resp.Value{Type: "error", Str: "ERR invalid float value"})
+				}
+				return
+			}
+			vec = append(vec, float32(val))
+		}
+
+		if h.aof != nil {
+			h.aof.Write(value)
+		}
+
+		h.store.SetVector(key, vec)
+		if w != nil {
+			w.Write(resp.Value{Type: "string", Str: "OK"})
+		}
+
 	case "GET":
 		if len(args) != 1 {
 			if w != nil {
@@ -266,6 +324,95 @@ func (h *Handler) Execute(value resp.Value, w *resp.Writer) {
 			} else {
 				w.Write(resp.Value{Type: "bulk", Bulk: val})
 			}
+		}
+
+	case "TGET":
+		if len(args) != 1 {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'tget' command"})
+			}
+			return
+		}
+		vec, ok := h.store.GetVector(args[0].Bulk)
+		if w != nil {
+			if !ok {
+				w.Write(resp.Value{Type: "null"})
+			} else {
+				vals := make([]resp.Value, len(vec))
+				for i, v := range vec {
+					vals[i] = resp.Value{Type: "bulk", Bulk: fmt.Sprintf("%g", v)}
+				}
+				w.Write(resp.Value{Type: "array", Array: vals})
+			}
+		}
+
+	case "VSEARCH":
+		// VSEARCH q1 q2 ... k
+		if len(args) < 2 {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'vsearch' command"})
+			}
+			return
+		}
+
+		// Last argument is K
+		kStr := args[len(args)-1].Bulk
+		k, err := strconv.Atoi(kStr)
+		if err != nil {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR invalid K value"})
+			}
+			return
+		}
+
+		// Parse query vector
+		queryVec := make([]float32, 0, len(args)-2)
+		for _, arg := range args[:len(args)-1] {
+			val, err := strconv.ParseFloat(arg.Bulk, 32)
+			if err != nil {
+				if w != nil {
+					w.Write(resp.Value{Type: "error", Str: "ERR invalid float value"})
+				}
+				return
+			}
+			queryVec = append(queryVec, float32(val))
+		}
+
+		// Perform linear search
+		// Note: GetAllVectors() locks RLock inside
+		candidates := h.store.GetAllVectors()
+
+		type result struct {
+			key   string
+			score float64
+		}
+		results := make([]result, 0, len(candidates))
+
+		for key, vec := range candidates {
+			if len(vec) != len(queryVec) {
+				continue // Skip dimension mismatch
+			}
+			dist := cosineDistance(queryVec, vec)
+			results = append(results, result{key: key, score: dist})
+		}
+
+		// Sort by distance (ascending)
+		sort.Slice(results, func(i, j int) bool {
+			return results[i].score < results[j].score
+		})
+
+		// Return top K keys
+		if k > len(results) {
+			k = len(results)
+		}
+
+		respArr := make([]resp.Value, k)
+		for i := 0; i < k; i++ {
+			respArr[i] = resp.Value{Type: "bulk", Bulk: results[i].key}
+		}
+
+		if w != nil {
+			w.Write(resp.Value{Type: "array", Array: respArr})
 		}
 
 	case "DEL":
@@ -338,4 +485,19 @@ func (h *Handler) Execute(value resp.Value, w *resp.Writer) {
 			w.Write(resp.Value{Type: "error", Str: fmt.Sprintf("ERR unknown command '%s'", command)})
 		}
 	}
+}
+
+// cosineDistance calculates 1 - CosineSimilarity. Lower is closer.
+func cosineDistance(a, b []float32) float64 {
+	var dot, magA, magB float64
+	for i := 0; i < len(a); i++ {
+		dot += float64(a[i]) * float64(b[i])
+		magA += float64(a[i]) * float64(a[i])
+		magB += float64(b[i]) * float64(b[i])
+	}
+	if magA == 0 || magB == 0 {
+		return 1.0 // Maximum distance if zero vector
+	}
+	similarity := dot / (math.Sqrt(magA) * math.Sqrt(magB))
+	return 1.0 - similarity
 }
