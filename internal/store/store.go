@@ -21,16 +21,23 @@ func New() *Store {
 	}
 }
 
-func (s *Store) Set(key, value string) {
+// Lock manually locks the store for writing. Used for transactions.
+func (s *Store) Lock() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+}
+
+// Unlock manually unlocks the store.
+func (s *Store) Unlock() {
+	s.mu.Unlock()
+}
+
+// SetWithoutLock writes to the store without locking. Caller must hold the lock.
+func (s *Store) SetWithoutLock(key, value string) {
 	s.data[key] = Item{Value: value}
 }
 
-func (s *Store) Get(key string) (string, bool) {
-	s.mu.Lock() // Using Lock because we might modify the map (lazy deletion)
-	defer s.mu.Unlock()
-
+// GetWithoutLock reads from the store without locking. Caller must hold the lock.
+func (s *Store) GetWithoutLock(key string) (string, bool) {
 	item, ok := s.data[key]
 	if !ok {
 		return "", false
@@ -44,11 +51,8 @@ func (s *Store) Get(key string) (string, bool) {
 	return item.Value, true
 }
 
-func (s *Store) Del(key string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Check if it exists and remove it regardless of expiration
+// DelWithoutLock deletes without locking. Caller must hold the lock.
+func (s *Store) DelWithoutLock(key string) bool {
 	_, exists := s.data[key]
 	if exists {
 		delete(s.data, key)
@@ -56,18 +60,13 @@ func (s *Store) Del(key string) bool {
 	return exists
 }
 
-// Expire sets a timeout on key. After the timeout has expired, the key will automatically be deleted.
-// Returns true if the timeout was set, false if key does not exist.
-func (s *Store) Expire(key string, seconds int) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// ExpireWithoutLock sets expiration without locking. Caller must hold the lock.
+func (s *Store) ExpireWithoutLock(key string, seconds int) bool {
 	item, ok := s.data[key]
 	if !ok {
 		return false
 	}
 
-	// Check if already expired
 	if !item.ExpiresAt.IsZero() && time.Now().After(item.ExpiresAt) {
 		delete(s.data, key)
 		return false
@@ -78,13 +77,8 @@ func (s *Store) Expire(key string, seconds int) bool {
 	return true
 }
 
-// TTL returns the remaining time to live of a key that has a timeout.
-// Returns -2 if the key does not exist.
-// Returns -1 if the key exists but has no associated expire.
-func (s *Store) TTL(key string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// TTLWithoutLock returns the TTL without locking. Caller must hold the lock.
+func (s *Store) TTLWithoutLock(key string) int {
 	item, ok := s.data[key]
 	if !ok {
 		return -2
@@ -100,4 +94,34 @@ func (s *Store) TTL(key string) int {
 	}
 
 	return int(time.Until(item.ExpiresAt).Seconds())
+}
+
+func (s *Store) Set(key, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.SetWithoutLock(key, value)
+}
+
+func (s *Store) Get(key string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.GetWithoutLock(key)
+}
+
+func (s *Store) Del(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.DelWithoutLock(key)
+}
+
+func (s *Store) Expire(key string, seconds int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ExpireWithoutLock(key, seconds)
+}
+
+func (s *Store) TTL(key string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.TTLWithoutLock(key)
 }
