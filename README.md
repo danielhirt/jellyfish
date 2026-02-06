@@ -16,7 +16,7 @@
         '-'   '-'
 ```
 
-Jellyfish is an in-memory key-value store that speaks the Redis protocol. It supports basic string operations, TTLs, ACID transactions, and vector storage with cosine similarity search — useful if you want a lightweight database that can also do nearest-neighbor lookups on embeddings.
+Jellyfish is an in-memory key-value store that speaks the Redis protocol. It supports basic string operations, TTLs, ACID transactions, and vector storage with cosine similarity search.
 
 Everything is built from scratch in Go with zero external dependencies.
 
@@ -82,7 +82,7 @@ ECHO hello         # hello
 
 ## Persistence
 
-Write operations are logged to an append-only file (`database.aof`). When the server restarts, it replays the log to restore state. No configuration needed — it just works.
+Write operations are logged to an append-only file (`database.aof`). When the server restarts, it replays the log to restore state.
 
 ## Running tests
 
