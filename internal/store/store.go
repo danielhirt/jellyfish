@@ -1,6 +1,7 @@
 package store
 
 import (
+	"maps"
 	"sync"
 	"time"
 )
@@ -284,9 +285,7 @@ func (s *Store) HGetAllWithoutLock(key string) (map[string]string, bool) {
 	}
 
 	result := make(map[string]string, len(item.HashVal))
-	for k, v := range item.HashVal {
-		result[k] = v
-	}
+	maps.Copy(result, item.HashVal)
 	return result, true
 }
 

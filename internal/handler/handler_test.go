@@ -91,7 +91,7 @@ func readRespValue(r *bufio.Reader) (respValue, error) {
 			return respValue{}, err
 		}
 		arr := make([]respValue, n)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			v, err := readRespValue(r)
 			if err != nil {
 				return respValue{}, err

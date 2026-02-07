@@ -710,7 +710,7 @@ func (h *Handler) Execute(value resp.Value, w *resp.Writer) {
 // cosineDistance calculates 1 - CosineSimilarity. Lower is closer.
 func cosineDistance(a, b []float32) float64 {
 	var dot, magA, magB float64
-	for i := 0; i < len(a); i++ {
+	for i := range a {
 		dot += float64(a[i]) * float64(b[i])
 		magA += float64(a[i]) * float64(a[i])
 		magB += float64(b[i]) * float64(b[i])
