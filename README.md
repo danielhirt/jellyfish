@@ -100,6 +100,7 @@ Jellyfish expects RESP arrays of bulk strings for requests. Null bulk values (`$
 
 Write operations are logged to an append-only file (`database.aof`). When the server restarts, it replays the log to restore state.
 If an AOF write fails, the command returns an error.
+There is no fsync policy yet, so recent writes may be lost on crash.
 
 ## Running tests
 
