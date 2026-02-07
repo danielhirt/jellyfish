@@ -8,12 +8,14 @@ import (
 const (
 	TypeString = 0
 	TypeVector = 1
+	TypeHash   = 2
 )
 
 type Item struct {
 	Type      uint8
 	StrVal    string
 	VecVal    []float32
+	HashVal   map[string]string
 	ExpiresAt time.Time // Zero value means no expiration
 }
 
@@ -184,6 +186,185 @@ func (s *Store) TTL(key string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.TTLWithoutLock(key)
+}
+
+// HSetWithoutLock sets fields on a hash. Returns the number of new fields added, or -1 on WRONGTYPE.
+func (s *Store) HSetWithoutLock(key string, fields map[string]string) int {
+	item, ok := s.data[key]
+	if ok {
+		if !item.ExpiresAt.IsZero() && time.Now().After(item.ExpiresAt) {
+			delete(s.data, key)
+			ok = false
+		}
+	}
+
+	if ok && item.Type != TypeHash {
+		return -1
+	}
+
+	if !ok {
+		item = Item{Type: TypeHash, HashVal: make(map[string]string)}
+	}
+
+	added := 0
+	for f, v := range fields {
+		if _, exists := item.HashVal[f]; !exists {
+			added++
+		}
+		item.HashVal[f] = v
+	}
+
+	s.data[key] = item
+	return added
+}
+
+// HGetWithoutLock returns the value of a hash field. Returns (value, found, typeOk).
+func (s *Store) HGetWithoutLock(key, field string) (string, bool, bool) {
+	item, ok := s.data[key]
+	if !ok {
+		return "", false, true
+	}
+
+	if !item.ExpiresAt.IsZero() && time.Now().After(item.ExpiresAt) {
+		delete(s.data, key)
+		return "", false, true
+	}
+
+	if item.Type != TypeHash {
+		return "", false, false
+	}
+
+	val, exists := item.HashVal[field]
+	return val, exists, true
+}
+
+// HDelWithoutLock deletes fields from a hash. Returns the number of fields removed, or -1 on WRONGTYPE.
+func (s *Store) HDelWithoutLock(key string, fields []string) int {
+	item, ok := s.data[key]
+	if !ok {
+		return 0
+	}
+
+	if !item.ExpiresAt.IsZero() && time.Now().After(item.ExpiresAt) {
+		delete(s.data, key)
+		return 0
+	}
+
+	if item.Type != TypeHash {
+		return -1
+	}
+
+	removed := 0
+	for _, f := range fields {
+		if _, exists := item.HashVal[f]; exists {
+			delete(item.HashVal, f)
+			removed++
+		}
+	}
+
+	s.data[key] = item
+	return removed
+}
+
+// HGetAllWithoutLock returns all fields and values of a hash. Returns (map, typeOk).
+// nil map + true = key not found. non-nil map + true = success. nil + false = WRONGTYPE.
+func (s *Store) HGetAllWithoutLock(key string) (map[string]string, bool) {
+	item, ok := s.data[key]
+	if !ok {
+		return nil, true
+	}
+
+	if !item.ExpiresAt.IsZero() && time.Now().After(item.ExpiresAt) {
+		delete(s.data, key)
+		return nil, true
+	}
+
+	if item.Type != TypeHash {
+		return nil, false
+	}
+
+	result := make(map[string]string, len(item.HashVal))
+	for k, v := range item.HashVal {
+		result[k] = v
+	}
+	return result, true
+}
+
+// HExistsWithoutLock checks if a field exists in a hash. Returns (exists, typeOk).
+func (s *Store) HExistsWithoutLock(key, field string) (bool, bool) {
+	item, ok := s.data[key]
+	if !ok {
+		return false, true
+	}
+
+	if !item.ExpiresAt.IsZero() && time.Now().After(item.ExpiresAt) {
+		delete(s.data, key)
+		return false, true
+	}
+
+	if item.Type != TypeHash {
+		return false, false
+	}
+
+	_, exists := item.HashVal[field]
+	return exists, true
+}
+
+// HLenWithoutLock returns the number of fields in a hash, or -1 on WRONGTYPE.
+func (s *Store) HLenWithoutLock(key string) int {
+	item, ok := s.data[key]
+	if !ok {
+		return 0
+	}
+
+	if !item.ExpiresAt.IsZero() && time.Now().After(item.ExpiresAt) {
+		delete(s.data, key)
+		return 0
+	}
+
+	if item.Type != TypeHash {
+		return -1
+	}
+
+	return len(item.HashVal)
+}
+
+// --- Public Hash API ---
+
+func (s *Store) HSet(key string, fields map[string]string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.HSetWithoutLock(key, fields)
+}
+
+func (s *Store) HGet(key, field string) (string, bool, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.HGetWithoutLock(key, field)
+}
+
+func (s *Store) HDel(key string, fields []string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.HDelWithoutLock(key, fields)
+}
+
+func (s *Store) HGetAll(key string) (map[string]string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.HGetAllWithoutLock(key)
+}
+
+func (s *Store) HExists(key, field string) (bool, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.HExistsWithoutLock(key, field)
+}
+
+func (s *Store) HLen(key string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.HLenWithoutLock(key)
 }
 
 // GetAllVectors returns a map of all valid vectors (for search).

@@ -232,6 +232,95 @@ func (h *Handler) executeWithoutLock(value resp.Value) resp.Value {
 		ttl := h.store.TTLWithoutLock(args[0].Bulk)
 		return resp.Value{Type: "integer", Num: ttl}
 
+	case "HSET":
+		if len(args) < 3 || len(args)%2 == 0 {
+			return resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'hset' command"}
+		}
+		key := args[0].Bulk
+		fields := make(map[string]string, (len(args)-1)/2)
+		for i := 1; i < len(args); i += 2 {
+			fields[args[i].Bulk] = args[i+1].Bulk
+		}
+		added := h.store.HSetWithoutLock(key, fields)
+		if added == -1 {
+			return resp.Value{Type: "error", Str: "WRONGTYPE Operation against a key holding the wrong kind of value"}
+		}
+		if h.aof != nil {
+			h.aof.Write(value)
+		}
+		return resp.Value{Type: "integer", Num: added}
+
+	case "HGET":
+		if len(args) != 2 {
+			return resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'hget' command"}
+		}
+		val, found, typeOk := h.store.HGetWithoutLock(args[0].Bulk, args[1].Bulk)
+		if !typeOk {
+			return resp.Value{Type: "error", Str: "WRONGTYPE Operation against a key holding the wrong kind of value"}
+		}
+		if !found {
+			return resp.Value{Type: "null"}
+		}
+		return resp.Value{Type: "bulk", Bulk: val}
+
+	case "HDEL":
+		if len(args) < 2 {
+			return resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'hdel' command"}
+		}
+		key := args[0].Bulk
+		fields := make([]string, len(args)-1)
+		for i, a := range args[1:] {
+			fields[i] = a.Bulk
+		}
+		removed := h.store.HDelWithoutLock(key, fields)
+		if removed == -1 {
+			return resp.Value{Type: "error", Str: "WRONGTYPE Operation against a key holding the wrong kind of value"}
+		}
+		if h.aof != nil && removed > 0 {
+			h.aof.Write(value)
+		}
+		return resp.Value{Type: "integer", Num: removed}
+
+	case "HGETALL":
+		if len(args) != 1 {
+			return resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'hgetall' command"}
+		}
+		m, typeOk := h.store.HGetAllWithoutLock(args[0].Bulk)
+		if !typeOk {
+			return resp.Value{Type: "error", Str: "WRONGTYPE Operation against a key holding the wrong kind of value"}
+		}
+		if m == nil {
+			return resp.Value{Type: "array", Array: []resp.Value{}}
+		}
+		arr := make([]resp.Value, 0, len(m)*2)
+		for k, v := range m {
+			arr = append(arr, resp.Value{Type: "bulk", Bulk: k}, resp.Value{Type: "bulk", Bulk: v})
+		}
+		return resp.Value{Type: "array", Array: arr}
+
+	case "HEXISTS":
+		if len(args) != 2 {
+			return resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'hexists' command"}
+		}
+		exists, typeOk := h.store.HExistsWithoutLock(args[0].Bulk, args[1].Bulk)
+		if !typeOk {
+			return resp.Value{Type: "error", Str: "WRONGTYPE Operation against a key holding the wrong kind of value"}
+		}
+		if exists {
+			return resp.Value{Type: "integer", Num: 1}
+		}
+		return resp.Value{Type: "integer", Num: 0}
+
+	case "HLEN":
+		if len(args) != 1 {
+			return resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'hlen' command"}
+		}
+		length := h.store.HLenWithoutLock(args[0].Bulk)
+		if length == -1 {
+			return resp.Value{Type: "error", Str: "WRONGTYPE Operation against a key holding the wrong kind of value"}
+		}
+		return resp.Value{Type: "integer", Num: length}
+
 	default:
 		return resp.Value{Type: "error", Str: fmt.Sprintf("ERR unknown command '%s'", command)}
 	}
@@ -478,6 +567,132 @@ func (h *Handler) Execute(value resp.Value, w *resp.Writer) {
 		ttl := h.store.TTL(key)
 		if w != nil {
 			w.Write(resp.Value{Type: "integer", Num: ttl})
+		}
+
+	case "HSET":
+		if len(args) < 3 || len(args)%2 == 0 {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'hset' command"})
+			}
+			return
+		}
+		key := args[0].Bulk
+		fields := make(map[string]string, (len(args)-1)/2)
+		for i := 1; i < len(args); i += 2 {
+			fields[args[i].Bulk] = args[i+1].Bulk
+		}
+		added := h.store.HSet(key, fields)
+		if added == -1 {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "WRONGTYPE Operation against a key holding the wrong kind of value"})
+			}
+			return
+		}
+		if h.aof != nil {
+			h.aof.Write(value)
+		}
+		if w != nil {
+			w.Write(resp.Value{Type: "integer", Num: added})
+		}
+
+	case "HGET":
+		if len(args) != 2 {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'hget' command"})
+			}
+			return
+		}
+		val, found, typeOk := h.store.HGet(args[0].Bulk, args[1].Bulk)
+		if w != nil {
+			if !typeOk {
+				w.Write(resp.Value{Type: "error", Str: "WRONGTYPE Operation against a key holding the wrong kind of value"})
+			} else if !found {
+				w.Write(resp.Value{Type: "null"})
+			} else {
+				w.Write(resp.Value{Type: "bulk", Bulk: val})
+			}
+		}
+
+	case "HDEL":
+		if len(args) < 2 {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'hdel' command"})
+			}
+			return
+		}
+		key := args[0].Bulk
+		fields := make([]string, len(args)-1)
+		for i, a := range args[1:] {
+			fields[i] = a.Bulk
+		}
+		removed := h.store.HDel(key, fields)
+		if removed == -1 {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "WRONGTYPE Operation against a key holding the wrong kind of value"})
+			}
+			return
+		}
+		if h.aof != nil && removed > 0 {
+			h.aof.Write(value)
+		}
+		if w != nil {
+			w.Write(resp.Value{Type: "integer", Num: removed})
+		}
+
+	case "HGETALL":
+		if len(args) != 1 {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'hgetall' command"})
+			}
+			return
+		}
+		m, typeOk := h.store.HGetAll(args[0].Bulk)
+		if w != nil {
+			if !typeOk {
+				w.Write(resp.Value{Type: "error", Str: "WRONGTYPE Operation against a key holding the wrong kind of value"})
+			} else if m == nil {
+				w.Write(resp.Value{Type: "array", Array: []resp.Value{}})
+			} else {
+				arr := make([]resp.Value, 0, len(m)*2)
+				for k, v := range m {
+					arr = append(arr, resp.Value{Type: "bulk", Bulk: k}, resp.Value{Type: "bulk", Bulk: v})
+				}
+				w.Write(resp.Value{Type: "array", Array: arr})
+			}
+		}
+
+	case "HEXISTS":
+		if len(args) != 2 {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'hexists' command"})
+			}
+			return
+		}
+		exists, typeOk := h.store.HExists(args[0].Bulk, args[1].Bulk)
+		if w != nil {
+			if !typeOk {
+				w.Write(resp.Value{Type: "error", Str: "WRONGTYPE Operation against a key holding the wrong kind of value"})
+			} else if exists {
+				w.Write(resp.Value{Type: "integer", Num: 1})
+			} else {
+				w.Write(resp.Value{Type: "integer", Num: 0})
+			}
+		}
+
+	case "HLEN":
+		if len(args) != 1 {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'hlen' command"})
+			}
+			return
+		}
+		length := h.store.HLen(args[0].Bulk)
+		if w != nil {
+			if length == -1 {
+				w.Write(resp.Value{Type: "error", Str: "WRONGTYPE Operation against a key holding the wrong kind of value"})
+			} else {
+				w.Write(resp.Value{Type: "integer", Num: length})
+			}
 		}
 
 	default:

@@ -16,7 +16,7 @@
         '-'   '-'
 ```
 
-Jellyfish is an in-memory key-value store that speaks the Redis protocol. It supports basic string operations, TTLs, ACID transactions, and vector storage with cosine similarity search.
+Jellyfish is an in-memory key-value store that speaks the Redis protocol. It supports strings, hash maps, TTLs, ACID transactions, and vector storage with cosine similarity search.
 
 Everything is built from scratch in Go with zero external dependencies.
 
@@ -71,6 +71,17 @@ TSET vec1 0.1 0.2 0.3
 TSET vec2 0.4 0.5 0.6
 TGET vec1                # [0.1, 0.2, 0.3]
 VSEARCH 0.1 0.2 0.3 2   # find 2 nearest vectors by cosine distance
+```
+
+**Hash maps:**
+
+```
+HSET user name Alice age 30   # set fields (returns number of new fields added)
+HGET user name                # "Alice"
+HGETALL user                  # ["name", "Alice", "age", "30"]
+HEXISTS user name             # 1
+HLEN user                     # 2
+HDEL user age                 # 1
 ```
 
 **Misc:**
