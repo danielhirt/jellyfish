@@ -18,6 +18,8 @@ type Handler struct {
 	aof   *aof.Aof
 }
 
+const aofWriteError = "ERR AOF write failed"
+
 func New(s *store.Store, aof *aof.Aof) *Handler {
 	return &Handler{
 		store: s,
@@ -124,6 +126,13 @@ func (h *Handler) execTx(w *resp.Writer, sess *session) {
 	w.Write(resp.Value{Type: "array", Array: responses})
 }
 
+func (h *Handler) writeAOF(value resp.Value) error {
+	if h.aof == nil {
+		return nil
+	}
+	return h.aof.Write(value)
+}
+
 // executeWithoutLock executes a command assuming the store is ALREADY locked.
 // It returns the response value instead of writing it.
 func (h *Handler) executeWithoutLock(value resp.Value) resp.Value {
@@ -145,8 +154,8 @@ func (h *Handler) executeWithoutLock(value resp.Value) resp.Value {
 			return resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'set' command"}
 		}
 
-		if h.aof != nil {
-			h.aof.Write(value)
+		if err := h.writeAOF(value); err != nil {
+			return resp.Value{Type: "error", Str: aofWriteError}
 		}
 
 		h.store.SetWithoutLock(args[0].Bulk, args[1].Bulk)
@@ -167,8 +176,8 @@ func (h *Handler) executeWithoutLock(value resp.Value) resp.Value {
 			vec = append(vec, float32(val))
 		}
 
-		if h.aof != nil {
-			h.aof.Write(value)
+		if err := h.writeAOF(value); err != nil {
+			return resp.Value{Type: "error", Str: aofWriteError}
 		}
 
 		h.store.SetVectorWithoutLock(key, vec)
@@ -204,8 +213,8 @@ func (h *Handler) executeWithoutLock(value resp.Value) resp.Value {
 		if len(args) != 1 {
 			return resp.Value{Type: "error", Str: "ERR wrong number of arguments for 'del' command"}
 		}
-		if h.aof != nil {
-			h.aof.Write(value)
+		if err := h.writeAOF(value); err != nil {
+			return resp.Value{Type: "error", Str: aofWriteError}
 		}
 		deleted := h.store.DelWithoutLock(args[0].Bulk)
 		if deleted {
@@ -221,8 +230,8 @@ func (h *Handler) executeWithoutLock(value resp.Value) resp.Value {
 		if err != nil {
 			return resp.Value{Type: "error", Str: "ERR value is not an integer or out of range"}
 		}
-		if h.aof != nil {
-			h.aof.Write(value)
+		if err := h.writeAOF(value); err != nil {
+			return resp.Value{Type: "error", Str: aofWriteError}
 		}
 		ok := h.store.ExpireWithoutLock(args[0].Bulk, seconds)
 		if ok {
@@ -250,8 +259,8 @@ func (h *Handler) executeWithoutLock(value resp.Value) resp.Value {
 		if added == -1 {
 			return resp.Value{Type: "error", Str: "WRONGTYPE Operation against a key holding the wrong kind of value"}
 		}
-		if h.aof != nil {
-			h.aof.Write(value)
+		if err := h.writeAOF(value); err != nil {
+			return resp.Value{Type: "error", Str: aofWriteError}
 		}
 		return resp.Value{Type: "integer", Num: added}
 
@@ -281,8 +290,10 @@ func (h *Handler) executeWithoutLock(value resp.Value) resp.Value {
 		if removed == -1 {
 			return resp.Value{Type: "error", Str: "WRONGTYPE Operation against a key holding the wrong kind of value"}
 		}
-		if h.aof != nil && removed > 0 {
-			h.aof.Write(value)
+		if removed > 0 {
+			if err := h.writeAOF(value); err != nil {
+				return resp.Value{Type: "error", Str: aofWriteError}
+			}
 		}
 		return resp.Value{Type: "integer", Num: removed}
 
@@ -362,8 +373,11 @@ func (h *Handler) Execute(value resp.Value, w *resp.Writer) {
 			return
 		}
 
-		if h.aof != nil {
-			h.aof.Write(value)
+		if err := h.writeAOF(value); err != nil {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: aofWriteError})
+			}
+			return
 		}
 
 		key := args[0].Bulk
@@ -394,8 +408,11 @@ func (h *Handler) Execute(value resp.Value, w *resp.Writer) {
 			vec = append(vec, float32(val))
 		}
 
-		if h.aof != nil {
-			h.aof.Write(value)
+		if err := h.writeAOF(value); err != nil {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: aofWriteError})
+			}
+			return
 		}
 
 		h.store.SetVector(key, vec)
@@ -517,8 +534,11 @@ func (h *Handler) Execute(value resp.Value, w *resp.Writer) {
 			return
 		}
 
-		if h.aof != nil {
-			h.aof.Write(value)
+		if err := h.writeAOF(value); err != nil {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: aofWriteError})
+			}
+			return
 		}
 
 		key := args[0].Bulk
@@ -548,8 +568,11 @@ func (h *Handler) Execute(value resp.Value, w *resp.Writer) {
 			return
 		}
 
-		if h.aof != nil {
-			h.aof.Write(value)
+		if err := h.writeAOF(value); err != nil {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: aofWriteError})
+			}
+			return
 		}
 
 		ok := h.store.Expire(key, seconds)
@@ -593,8 +616,11 @@ func (h *Handler) Execute(value resp.Value, w *resp.Writer) {
 			}
 			return
 		}
-		if h.aof != nil {
-			h.aof.Write(value)
+		if err := h.writeAOF(value); err != nil {
+			if w != nil {
+				w.Write(resp.Value{Type: "error", Str: aofWriteError})
+			}
+			return
 		}
 		if w != nil {
 			w.Write(resp.Value{Type: "integer", Num: added})
@@ -637,8 +663,13 @@ func (h *Handler) Execute(value resp.Value, w *resp.Writer) {
 			}
 			return
 		}
-		if h.aof != nil && removed > 0 {
-			h.aof.Write(value)
+		if removed > 0 {
+			if err := h.writeAOF(value); err != nil {
+				if w != nil {
+					w.Write(resp.Value{Type: "error", Str: aofWriteError})
+				}
+				return
+			}
 		}
 		if w != nil {
 			w.Write(resp.Value{Type: "integer", Num: removed})

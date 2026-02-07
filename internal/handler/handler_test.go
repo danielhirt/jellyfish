@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
 
+	"jellyfish/internal/aof"
 	"jellyfish/internal/resp"
 	"jellyfish/internal/store"
 )
@@ -257,5 +259,44 @@ func TestHandler_Transactions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.run(t)
 		})
+	}
+}
+
+func TestHandler_AofWriteError(t *testing.T) {
+	f, err := os.CreateTemp("", "jellyfish_test_*.aof")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpName := f.Name()
+	f.Close()
+	defer os.Remove(tmpName)
+
+	log, err := aof.New(tmpName)
+	if err != nil {
+		t.Fatalf("Failed to open AOF: %v", err)
+	}
+	log.Close()
+
+	h := New(store.New(), log)
+
+	server, client := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	go h.Handle(server)
+
+	r := bufio.NewReader(client)
+	w := resp.NewWriter(client)
+
+	if err := writeCommand(w, "SET", "a", "1"); err != nil {
+		t.Fatalf("write SET: %v", err)
+	}
+
+	v, err := readRespValue(r)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if v.Type != "error" || v.Str != aofWriteError {
+		t.Fatalf("response = %#v, want error %q", v, aofWriteError)
 	}
 }
