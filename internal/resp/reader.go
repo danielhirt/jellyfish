@@ -91,12 +91,24 @@ func (r *Reader) readBulk() (Value, error) {
 		return v, err
 	}
 
+	if len == -1 {
+		v.Type = "null"
+		return v, nil
+	}
+	if len < -1 {
+		return v, fmt.Errorf("invalid bulk length: %d", len)
+	}
+
 	bulk := make([]byte, len)
-	r.reader.Read(bulk)
+	if _, err := io.ReadFull(r.reader, bulk); err != nil {
+		return v, err
+	}
 	v.Bulk = string(bulk)
 
 	// Read the trailing CRLF
-	r.ReadLine()
+	if _, _, err := r.ReadLine(); err != nil {
+		return v, err
+	}
 
 	return v, nil
 }

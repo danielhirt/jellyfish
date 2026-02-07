@@ -92,6 +92,10 @@ PING               # PONG
 ECHO hello         # hello
 ```
 
+## Protocol
+
+Jellyfish expects RESP arrays of bulk strings for requests. Null bulk values (`$-1`) are accepted.
+
 ## Persistence
 
 Write operations are logged to an append-only file (`database.aof`). When the server restarts, it replays the log to restore state.
