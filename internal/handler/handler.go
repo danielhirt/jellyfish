@@ -14,19 +14,20 @@ import (
 )
 
 type Handler struct {
-	store   *store.Store
-	aof     *aof.Aof
-	inTx    bool
-	txQueue []resp.Value
+	store *store.Store
+	aof   *aof.Aof
 }
 
 func New(s *store.Store, aof *aof.Aof) *Handler {
 	return &Handler{
-		store:   s,
-		aof:     aof,
-		inTx:    false,
-		txQueue: make([]resp.Value, 0),
+		store: s,
+		aof:   aof,
 	}
+}
+
+type session struct {
+	inTx    bool
+	txQueue []resp.Value
 }
 
 func (h *Handler) Handle(conn net.Conn) {
@@ -34,6 +35,10 @@ func (h *Handler) Handle(conn net.Conn) {
 
 	r := resp.NewReader(conn)
 	w := resp.NewWriter(conn)
+	sess := &session{
+		inTx:    false,
+		txQueue: make([]resp.Value, 0),
+	}
 
 	for {
 		value, err := r.Read()
@@ -49,49 +54,49 @@ func (h *Handler) Handle(conn net.Conn) {
 			continue
 		}
 
-		h.handleCommand(value, w)
+		h.handleCommand(value, w, sess)
 	}
 }
 
-func (h *Handler) handleCommand(value resp.Value, w *resp.Writer) {
+func (h *Handler) handleCommand(value resp.Value, w *resp.Writer, sess *session) {
 	command := strings.ToUpper(value.Array[0].Bulk)
 
 	// Handle Transaction Control Commands
 	if command == "MULTI" {
-		if h.inTx {
+		if sess.inTx {
 			w.Write(resp.Value{Type: "error", Str: "ERR MULTI calls can not be nested"})
 			return
 		}
-		h.inTx = true
-		h.txQueue = make([]resp.Value, 0)
+		sess.inTx = true
+		sess.txQueue = make([]resp.Value, 0)
 		w.Write(resp.Value{Type: "string", Str: "OK"})
 		return
 	}
 
 	if command == "DISCARD" {
-		if !h.inTx {
+		if !sess.inTx {
 			w.Write(resp.Value{Type: "error", Str: "ERR DISCARD without MULTI"})
 			return
 		}
-		h.inTx = false
-		h.txQueue = nil
+		sess.inTx = false
+		sess.txQueue = nil
 		w.Write(resp.Value{Type: "string", Str: "OK"})
 		return
 	}
 
 	if command == "EXEC" {
-		if !h.inTx {
+		if !sess.inTx {
 			w.Write(resp.Value{Type: "error", Str: "ERR EXEC without MULTI"})
 			return
 		}
 
-		h.execTx(w)
+		h.execTx(w, sess)
 		return
 	}
 
 	// Queue commands if in transaction
-	if h.inTx {
-		h.txQueue = append(h.txQueue, value)
+	if sess.inTx {
+		sess.txQueue = append(sess.txQueue, value)
 		w.Write(resp.Value{Type: "string", Str: "QUEUED"})
 		return
 	}
@@ -100,20 +105,20 @@ func (h *Handler) handleCommand(value resp.Value, w *resp.Writer) {
 	h.Execute(value, w)
 }
 
-func (h *Handler) execTx(w *resp.Writer) {
+func (h *Handler) execTx(w *resp.Writer, sess *session) {
 	// Atomically execute all commands
 	h.store.Lock()
 	defer h.store.Unlock()
 
-	responses := make([]resp.Value, len(h.txQueue))
+	responses := make([]resp.Value, len(sess.txQueue))
 
-	for i, cmdValue := range h.txQueue {
+	for i, cmdValue := range sess.txQueue {
 		responses[i] = h.executeWithoutLock(cmdValue)
 	}
 
 	// Clear transaction state
-	h.inTx = false
-	h.txQueue = nil
+	sess.inTx = false
+	sess.txQueue = nil
 
 	// Write array response
 	w.Write(resp.Value{Type: "array", Array: responses})

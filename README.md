@@ -16,7 +16,7 @@
         '-'   '-'
 ```
 
-Jellyfish is an in-memory key-value store that speaks the Redis protocol. It supports strings, hash maps, TTLs, ACID transactions, and vector storage with cosine similarity search.
+Jellyfish is an in-memory key-value store that speaks the Redis protocol. It supports strings, hash maps, TTLs, transactions (MULTI/EXEC), and vector storage with cosine similarity search.
 
 Everything is built from scratch in Go with zero external dependencies.
 
@@ -63,6 +63,7 @@ EXEC               # execute atomically
 ```
 
 Use `DISCARD` to cancel a transaction.
+Transactions are per-connection and execute atomically at `EXEC`. There is no isolation across clients between `MULTI` and `EXEC`.
 
 **Vector storage and search:**
 
